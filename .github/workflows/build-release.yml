@@ -1,0 +1,168 @@
+# 集成 Build & Release 工作流（取代原 build/docker/release/format/update_resources/update_wiki 六个 yml）
+#
+# 设计要点：
+#   - 不构建 Docker 镜像，也不发布到 crates.io / PyPI / npm（避免配置各类 token）。
+#   - release 仅用自动的 GITHUB_TOKEN 创建 GitHub Release 并附带构建产物，无需任何手动 Secret。
+#   - fmt 阶段保留「自动提交格式化」（cargo fmt 后由 git-auto-commit-action 写回）。
+#   - update_resources / update_wiki 自动化已移除。
+#
+# 触发：
+#   push main        → fmt 自动格式化 + 全平台编译 + 生成版本号并创建 GitHub Release
+#   pull_request     → fmt 自动格式化（写回 PR 分支）+ 全平台编译（不发布）
+#   workflow_dispatch→ 手动触发一次完整流程
+#
+# 版本号：取自根 Cargo.toml 的 version，追加 +build.{git 提交数}，tag 为 v{version}+build.{n}
+# （沿用 meme-emoji 的做法，每次 main push 都会生成一个带自增构建号的 Release）
+
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Rustfmt (auto-fix)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Run cargo fmt
+        run: cargo fmt --all
+      - uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: "style: auto format code with cargo fmt"
+
+  generate_version:
+    name: Generate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Get version from Cargo.toml
+        id: cargo_version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | awk -F '"' '{print $2}')
+          echo "cargo_version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Generate build version with metadata
+        id: version
+        run: |
+          BUILD_NUMBER=$(git rev-list --count HEAD)
+          FULL_VERSION="${{ steps.cargo_version.outputs.cargo_version }}+build.${BUILD_NUMBER}"
+          echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v${FULL_VERSION}" >> $GITHUB_OUTPUT
+
+  build:
+    name: Build (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x86_64
+            features: "server"
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            label: macos-x86_64
+            features: "server"
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-aarch64
+            features: "server"
+          - runner: ubuntu-latest
+            container: ghcr.io/memecrafters/meme-generator-build-container:latest
+            target: x86_64-unknown-linux-gnu
+            label: linux-x86_64
+            features: "server,vendored,embed-freetype"
+          - runner: ubuntu-24.04-arm
+            container: ghcr.io/memecrafters/meme-generator-build-container:arm64
+            target: aarch64-unknown-linux-gnu
+            label: linux-aarch64
+            features: "server,vendored,embed-freetype"
+          - runner: ubuntu-latest
+            container: ghcr.io/memecrafters/meme-generator-build-container:android
+            target: aarch64-linux-android
+            label: android-aarch64
+            features: "server,vendored"
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - name: Add target & build CLI
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} --bin meme --features "${{ matrix.features }}"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Build node addon
+        if: ${{ matrix.target != 'aarch64-linux-android' }}
+        run: pnpm install && pnpm build --release --target ${{ matrix.target }} ${{ contains(matrix.features, 'vendored') && '--features vendored,embed-freetype' || '' }}
+        working-directory: meme_generator_node
+      - name: Build python wheel
+        if: ${{ matrix.target != 'aarch64-linux-android' }}
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          working-directory: meme_generator_py
+          args: --release --out dist ${{ contains(matrix.features, 'vendored') && '--features vendored,embed-freetype' || '' }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: meme-generator-cli-${{ matrix.label }}
+          path: |
+            target/${{ matrix.target }}/release/meme*
+            !target/${{ matrix.target }}/release/*.pdb
+            !target/${{ matrix.target }}/release/*.d
+      - uses: actions/upload-artifact@v6
+        if: ${{ matrix.target != 'aarch64-linux-android' }}
+        with:
+          name: meme-generator-node-${{ matrix.label }}
+          path: meme_generator_node/meme-generator*
+      - uses: actions/upload-artifact@v6
+        if: ${{ matrix.target != 'aarch64-linux-android' }}
+        with:
+          name: meme-generator-py-${{ matrix.label }}
+          path: meme_generator_py/dist
+
+  release:
+    name: Create Release
+    needs: [generate_version, build]
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.generate_version.outputs.tag }}
+          name: Release ${{ needs.generate_version.outputs.version }}
+          draft: false
+          prerelease: false
+          files: artifacts/**/*
