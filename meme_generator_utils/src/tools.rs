@@ -3,8 +3,8 @@ use std::sync::LazyLock;
 use chrono::{DateTime, Local, TimeZone};
 use regex::Regex;
 use skia_safe::{
-    Color, Color4f, Data, FilterMode, IRect, ISize, Image, MipmapMode, Paint, PaintJoin,
-    PaintStyle, SamplingOptions, Surface, scalar, surfaces,
+    Color, Color4f, Data, FilterMode, ISize, Image, MipmapMode, Paint, PaintJoin, PaintStyle,
+    SamplingOptions, Surface, scalar, surfaces,
     textlayout::{Decoration, TextDecoration, TextDecorationMode},
 };
 
@@ -12,7 +12,10 @@ use meme_generator_core::error::Error;
 
 use crate::config::IMAGES_DIR;
 
-pub static GRID_PATTERN_IMAGE: LazyLock<Image> = LazyLock::new(grid_pattern_image);
+const PLACEHOLDER_IMAGE_BYTES: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/placeholder.jpg"));
+
+pub static PLACEHOLDER_IMAGE: LazyLock<Image> = LazyLock::new(placeholder_image);
 
 pub fn new_surface(size: impl Into<ISize>) -> Surface {
     surfaces::raster_n32_premul(size).unwrap()
@@ -237,17 +240,23 @@ pub fn load_image(path: impl Into<String>) -> Result<Image, Error> {
     )))
 }
 
-fn grid_pattern_image() -> Image {
-    let mut surface = new_surface(ISize::new(500, 500));
-    let canvas = surface.canvas();
-    canvas.clear(Color::WHITE);
-    let paint = new_paint(color_from_hex_code("#cccccc"));
-    for x in 0..20 {
-        for y in 0..20 {
-            if (x + y) % 2 == 0 {
-                canvas.draw_irect(IRect::from_xywh(x * 25, y * 25, 25, 25), &paint);
-            }
-        }
+fn placeholder_image() -> Image {
+    let data = Data::new_copy(PLACEHOLDER_IMAGE_BYTES);
+    Image::from_encoded(data).expect(
+        "failed to decode embedded placeholder.jpg; ensure assets/placeholder.jpg is a valid image",
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn placeholder_image_decodes() {
+        let image = PLACEHOLDER_IMAGE.clone();
+        assert!(
+            image.width() > 0 && image.height() > 0,
+            "embedded assets/placeholder.jpg failed to decode into a valid image"
+        );
     }
-    surface.image_snapshot()
 }

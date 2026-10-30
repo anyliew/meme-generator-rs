@@ -17,8 +17,8 @@ version = "0.2.3"
 authors = ["meetwq <meetwq@gmail.com>"]
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/MemeCrafters/meme-generator-rs"
-repository = "https://github.com/MemeCrafters/meme-generator-rs"
+homepage = "https://github.com/anyliew/meme-generator-rs"
+repository = "https://github.com/anyliew/meme-generator-rs"
 edition = "2024"
 
 [workspace.dependencies]
