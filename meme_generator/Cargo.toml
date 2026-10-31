@@ -1,0 +1,33 @@
+[package]
+name = "meme_generator"
+description = "Meme generator for making fun pictures"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[dependencies]
+fuzzy-matcher = "0.3"
+indicatif = "0.18"
+libloading = "0.9"
+pinyin = "0.11"
+sha2 = "0.10"
+
+reqwest = { workspace = true, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+skia-safe.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+
+meme_generator_core.workspace = true
+meme_generator_memes = { version = "0.2", path = "../meme_generator_memes" }
+meme_generator_utils.workspace = true
+
+[features]
+vendored = ["reqwest/native-tls-vendored"]
+embed-freetype = ["meme_generator_memes/embed-freetype"]

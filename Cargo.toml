@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "meme_generator",
+    "meme_generator_cli",
+    "meme_generator_core",
+    "meme_generator_memes",
+    "meme_generator_node",
+    "meme_generator_py",
+    "meme_generator_server",
+    "meme_generator_utils",
+    "meme_options_derive",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.3"
+authors = ["meetwq <meetwq@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/MemeCrafters/meme-generator-rs"
+repository = "https://github.com/MemeCrafters/meme-generator-rs"
+edition = "2024"
+
+[workspace.dependencies]
+chrono = "0.4"
+infer = "0.16"
+md5 = "0.7"
+reqwest = { version = "0.13" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+skia-safe = { version = "0.93", features = ["textlayout"] }
+tokio = { version = "1.49", features = ["full"] }
+toml = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+meme_generator = { path = "meme_generator" }
+meme_generator_core = { version = "0.0.5", path = "meme_generator_core" }
+meme_generator_utils = { version = "0.0.9", path = "meme_generator_utils" }
