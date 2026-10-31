@@ -12,8 +12,10 @@ use meme_generator_core::error::Error;
 
 use crate::config::IMAGES_DIR;
 
-const PLACEHOLDER_IMAGE_BYTES: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/placeholder.jpg"));
+const PLACEHOLDER_IMAGE_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/placeholder.jpg"
+));
 
 pub static PLACEHOLDER_IMAGE: LazyLock<Image> = LazyLock::new(placeholder_image);
 
