@@ -111,13 +111,6 @@ jobs:
         run: |
           rustup target add ${{ matrix.target }}
           cargo build --release --target ${{ matrix.target }} --bin meme --features "${{ matrix.features }}"
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - name: Build node addon
-        if: ${{ matrix.target != 'aarch64-linux-android' }}
-        run: pnpm install && pnpm build --release --target ${{ matrix.target }} ${{ contains(matrix.features, 'vendored') && '--features vendored,embed-freetype' || '' }}
-        working-directory: meme_generator_node
       - name: Build python wheel
         if: ${{ matrix.target != 'aarch64-linux-android' }}
         uses: PyO3/maturin-action@v1
@@ -132,11 +125,6 @@ jobs:
             target/${{ matrix.target }}/release/meme*
             !target/${{ matrix.target }}/release/*.pdb
             !target/${{ matrix.target }}/release/*.d
-      - uses: actions/upload-artifact@v6
-        if: ${{ matrix.target != 'aarch64-linux-android' }}
-        with:
-          name: meme-generator-node-${{ matrix.label }}
-          path: meme_generator_node/meme-generator*
       - uses: actions/upload-artifact@v6
         if: ${{ matrix.target != 'aarch64-linux-android' }}
         with:
