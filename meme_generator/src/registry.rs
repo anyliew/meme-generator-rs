@@ -8,6 +8,7 @@ use meme_generator_core::{
     meme::{Image, Meme, MemeInfo, OptionValue},
     registry::{CORE_VERSION, MemePackDeclaration, RUSTC_VERSION},
 };
+use meme_generator_utils::{encoder::encode_png, tools::PLACEHOLDER_IMAGE};
 use tracing::{info, warn};
 
 use crate::config::CONFIG;
@@ -59,7 +60,42 @@ impl Meme for ExternalMeme {
     }
 
     fn generate_preview(&self, options: HashMap<String, OptionValue>) -> Result<Vec<u8>, Error> {
-        self.meme.generate_preview(options)
+        // 外部表情库（dll）里的 generate_preview 由其依赖的「已发布」meme_generator_utils 编译，
+        // 不会带上本仓库对占位图的改动。这里在宿主端用本地 PLACEHOLDER_IMAGE（1.jpg）构造预览输入，
+        // 再交给 dll 的 generate 渲染——dll 只负责画，占位图由宿主决定，从而对外部表情同样生效。
+        let params = self.meme.info().params;
+        let mut images = Vec::new();
+        if params.min_images > 0 {
+            let image = encode_png(PLACEHOLDER_IMAGE.clone())?;
+            for i in 0..params.min_images {
+                let name = if params.min_images == 1 {
+                    "{name}".to_string()
+                } else {
+                    format!("{{name{}}}", i + 1)
+                };
+                images.push(Image {
+                    name,
+                    data: image.clone(),
+                });
+            }
+        }
+        let texts = if params.default_texts.len() >= params.min_texts as usize
+            && params.default_texts.len() <= params.max_texts as usize
+        {
+            params.default_texts.clone()
+        } else {
+            let mut texts = Vec::new();
+            for i in 0..params.min_texts {
+                let text = if params.min_texts == 1 {
+                    "{text}".to_string()
+                } else {
+                    format!("{{text{}}}", i + 1)
+                };
+                texts.push(text);
+            }
+            texts
+        };
+        self.meme.generate(images, texts, options)
     }
 }
 
