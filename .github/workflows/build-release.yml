@@ -242,9 +242,9 @@ jobs:
           for f in $(find artifacts -type f | sort); do
             base=$(basename "$f")
             if [[ "$base" == meme-generator-cli-* ]]; then
-              stem="${base%.*}"
-              rust="${stem##*-}"
-              label="${stem%-*}"
+              name="${base%.exe}"
+              rust="${name##*-}"
+              label="${name%-*}"
               label="${label#meme-generator-cli-}"
               case "$rust" in
                 stable|1.93.1) ;;
@@ -252,9 +252,9 @@ jobs:
               esac
               CLI["${label}|${rust}"]="$base"
             elif [[ "$base" == meme-generator-py-* ]]; then
-              stem="${base%.*}"
-              rust="${stem##*-}"
-              label="${stem%-*}"
+              name="${base%.whl}"
+              rust="${name##*-}"
+              label="${name%-*}"
               label="${label#meme-generator-py-}"
               case "$rust" in
                 stable|1.93.1) ;;
