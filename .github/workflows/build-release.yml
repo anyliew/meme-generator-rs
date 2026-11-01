@@ -5,9 +5,11 @@
 #   - release 仅用自动的 GITHUB_TOKEN 创建 GitHub Release 并附带构建产物，无需任何手动 Secret。
 #   - fmt 阶段保留「自动提交格式化」（cargo fmt 后由 git-auto-commit-action 写回）。
 #   - update_resources / update_wiki 自动化已移除。
+#   - 每个平台分别用 stable 与 1.93.1 两个 Rust 工具链构建，产物按 Rust 版本命名，
+#     发布说明给出 stable / 1.93.1 两列的下载表（参照 anyliew/meme-emoji）。
 #
 # 触发：
-#   push main        → fmt 自动格式化 + 全平台编译 + 生成版本号并创建 GitHub Release
+#   push main        → fmt 自动格式化 + 全平台编译（stable + 1.93.1）+ 生成版本号并创建 GitHub Release
 #   pull_request     → fmt 自动格式化（写回 PR 分支）+ 全平台编译（不发布）
 #   workflow_dispatch→ 手动触发一次完整流程
 #
@@ -69,11 +71,13 @@ jobs:
           echo "tag=v${FULL_VERSION}" >> $GITHUB_OUTPUT
 
   build:
-    name: Build (${{ matrix.label }})
+    name: Build (${{ matrix.platform.label }}, ${{ matrix.rust }})
+    needs: generate_version
     strategy:
       fail-fast: false
       matrix:
-        include:
+        rust: [stable, "1.93.1"]
+        platform:
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows-x86_64
@@ -101,18 +105,34 @@ jobs:
             target: aarch64-linux-android
             label: android-aarch64
             features: "server,vendored"
-    runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.container }}
+    runs-on: ${{ matrix.platform.runner }}
+    container: ${{ matrix.platform.container }}
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: ${{ matrix.platform.target }}
       - uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rust }}
       - name: Add target & build CLI
         run: |
-          rustup target add ${{ matrix.target }}
-          cargo build --release --target ${{ matrix.target }} --bin meme --features "${{ matrix.features }}"
+          rustup target add ${{ matrix.platform.target }}
+          cargo build --release --target ${{ matrix.platform.target }} --bin meme --features "${{ matrix.platform.features }}"
+      - name: Rename CLI binary
+        shell: bash
+        run: |
+          cd "target/${{ matrix.platform.target }}/release/"
+          if [ "${{ matrix.platform.label }}" = "windows-x86_64" ]; then
+            mv meme.exe "meme-generator-cli-${{ matrix.platform.label }}-${{ matrix.rust }}.exe"
+          else
+            mv meme "meme-generator-cli-${{ matrix.platform.label }}-${{ matrix.rust }}"
+          fi
       - name: Install Python (in container)
-        if: ${{ matrix.container != '' && matrix.target != 'aarch64-linux-android' }}
+        if: ${{ matrix.platform.container != '' && matrix.platform.target != 'aarch64-linux-android' }}
         run: |
           if ! command -v python3 >/dev/null 2>&1; then
             apt-get update -qq
@@ -120,25 +140,41 @@ jobs:
           fi
           python3 --version
       - name: Build python wheel
-        if: ${{ matrix.target != 'aarch64-linux-android' }}
+        if: ${{ matrix.platform.target != 'aarch64-linux-android' }}
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
+          target: ${{ matrix.platform.target }}
           manylinux: "off"
           working-directory: meme_generator_py
-          args: --release --out dist ${{ contains(matrix.features, 'vendored') && '--features vendored,embed-freetype' || '' }}
+          args: --release --out dist ${{ contains(matrix.platform.features, 'vendored') && '--features vendored,embed-freetype' || '' }}
+      - name: Rename python wheel
+        if: ${{ matrix.platform.target != 'aarch64-linux-android' }}
+        shell: bash
+        run: |
+          cd meme_generator_py/dist
+          shopt -s nullglob
+          for f in *.whl; do
+            mv "$f" "meme-generator-py-${{ matrix.platform.label }}-${{ matrix.rust }}.whl"
+          done
+      - name: Record stable rustc version
+        if: ${{ matrix.rust == 'stable' && matrix.platform.label == 'linux-x86_64' }}
+        shell: bash
+        run: rustc --version > rust-version-stable.txt
       - uses: actions/upload-artifact@v6
         with:
-          name: meme-generator-cli-${{ matrix.label }}
+          name: meme-generator-cli-${{ matrix.platform.label }}-${{ matrix.rust }}
           path: |
-            target/${{ matrix.target }}/release/meme*
-            !target/${{ matrix.target }}/release/*.pdb
-            !target/${{ matrix.target }}/release/*.d
+            target/${{ matrix.platform.target }}/release/meme-generator-cli-${{ matrix.platform.label }}-${{ matrix.rust }}*
       - uses: actions/upload-artifact@v6
-        if: ${{ matrix.target != 'aarch64-linux-android' }}
+        if: ${{ matrix.platform.target != 'aarch64-linux-android' }}
         with:
-          name: meme-generator-py-${{ matrix.label }}
-          path: meme_generator_py/dist
+          name: meme-generator-py-${{ matrix.platform.label }}-${{ matrix.rust }}
+          path: meme_generator_py/dist/meme-generator-py-${{ matrix.platform.label }}-${{ matrix.rust }}.whl
+      - uses: actions/upload-artifact@v6
+        if: ${{ matrix.rust == 'stable' && matrix.platform.label == 'linux-x86_64' }}
+        with:
+          name: rust-version-stable
+          path: rust-version-stable.txt
 
   release:
     name: Create Release
@@ -155,11 +191,182 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-      - name: Create GitHub Release
+      - name: List all downloaded files
+        run: |
+          echo "📂 Downloaded artifacts:"
+          find artifacts -type f | sort
+      - name: Generate release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.generate_version.outputs.tag }}"
+          VERSION="${{ needs.generate_version.outputs.version }}"
+          REPO="${{ github.repository }}"
+          REPO_NAME="${REPO##*/}"
+          SGT=$(TZ=Asia/Singapore date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || TZ=UTC-8 date '+%Y-%m-%d %H:%M:%S')
+
+          # stable 工具链的 rustc 版本（由 stable 构建任务记录下来）
+          STABLE_RUSTC="未知"
+          if [ -f artifacts/rust-version-stable/rust-version-stable.txt ]; then
+            STABLE_RUSTC="$(cat artifacts/rust-version-stable/rust-version-stable.txt)"
+          fi
+
+          git fetch --tags --force || true
+
+          # 上一版本 tag（按创建时间倒序取第二个）
+          PREV_TAG=$(git tag --sort=-creatordate | grep -v -x "$TAG" | head -1 || true)
+
+          # 提交清单
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:'- %s (%h)' "${PREV_TAG}..HEAD")
+          else
+            COMMITS=$(git log --pretty=format:'- %s (%h)' -n 20)
+          fi
+          COUNT=$(printf '%s\n' "$COMMITS" | grep -c '^- ' || true)
+          if [ "$COUNT" -eq 0 ]; then
+            printf '%s\n' "- 无新增提交" > /tmp/commits.md
+          elif [ "$COUNT" -gt 30 ]; then
+            {
+              printf '<details>\n<summary>共 %s 条提交</summary>\n\n' "$COUNT"
+              printf '%s\n' "$COMMITS"
+              printf '\n</details>\n'
+            } > /tmp/commits.md
+          else
+            printf '%s\n' "$COMMITS" > /tmp/commits.md
+          fi
+
+          # 扫描产物，按 label + rust 版本归类
+          declare -A CLI
+          declare -A PY
+          LABELS=""
+          for f in $(find artifacts -type f | sort); do
+            base=$(basename "$f")
+            if [[ "$base" == meme-generator-cli-* ]]; then
+              stem="${base%.*}"
+              rust="${stem##*-}"
+              label="${stem%-*}"
+              label="${label#meme-generator-cli-}"
+              case "$rust" in
+                stable|1.93.1) ;;
+                *) continue ;;
+              esac
+              CLI["${label}|${rust}"]="$base"
+            elif [[ "$base" == meme-generator-py-* ]]; then
+              stem="${base%.*}"
+              rust="${stem##*-}"
+              label="${stem%-*}"
+              label="${label#meme-generator-py-}"
+              case "$rust" in
+                stable|1.93.1) ;;
+                *) continue ;;
+              esac
+              PY["${label}|${rust}"]="$base"
+            else
+              continue
+            fi
+            case " ${LABELS} " in
+              *" ${label} "*) ;;
+              *) LABELS="${LABELS} ${label}" ;;
+            esac
+          done
+
+          # 固定展示顺序，未列出的 label 追加在末尾
+          ORDER="windows-x86_64 macos-x86_64 macos-aarch64 linux-x86_64 linux-aarch64 android-aarch64"
+          ORDERED=""
+          for l in ${ORDER}; do
+            case " ${LABELS} " in *" ${l} "*) ORDERED="${ORDERED} ${l}" ;; esac
+          done
+          for l in ${LABELS}; do
+            case " ${ORDERED} " in *" ${l} "*) ;; *) ORDERED="${ORDERED} ${l}" ;; esac
+          done
+
+          display_name() {
+            case "$1" in
+              windows-x86_64) echo "Windows x64" ;;
+              macos-x86_64) echo "macOS Intel" ;;
+              macos-aarch64) echo "macOS Apple Silicon" ;;
+              linux-x86_64) echo "Linux x64" ;;
+              linux-aarch64) echo "Linux ARM64" ;;
+              android-aarch64) echo "Android ARM64" ;;
+              *) echo "$1" ;;
+            esac
+          }
+
+          TAG_URL=$(printf '%s' "$TAG" | sed 's/+/%2B/g')
+
+          build_cell() {
+            local file="$1"
+            if [ -n "$file" ]; then
+              printf '[%s](https://github.com/%s/releases/download/%s/%s)' "$file" "$REPO" "$TAG_URL" "$file"
+            else
+              printf '—'
+            fi
+          }
+
+          # CLI 下载表（stable | 1.93.1）
+          CLI_TABLE="| 平台 | stable | 1.93.1 |\n| --- | --- | --- |\n"
+          for l in ${ORDERED}; do
+            cell_s=$(build_cell "${CLI[${l}|stable]:-}")
+            cell_o=$(build_cell "${CLI[${l}|1.93.1]:-}")
+            CLI_TABLE="${CLI_TABLE}| $(display_name "$l") | ${cell_s} | ${cell_o} |\n"
+          done
+
+          # Python 轮子下载表（stable | 1.93.1）
+          PY_TABLE="| 平台 | stable | 1.93.1 |\n| --- | --- | --- |\n"
+          for l in ${ORDERED}; do
+            cell_s=$(build_cell "${PY[${l}|stable]:-}")
+            cell_o=$(build_cell "${PY[${l}|1.93.1]:-}")
+            PY_TABLE="${PY_TABLE}| $(display_name "$l") | ${cell_s} | ${cell_o} |\n"
+          done
+
+          # 完整差异链接
+          if [ -n "$PREV_TAG" ]; then
+            PREV_URL=$(printf '%s' "$PREV_TAG" | sed 's/+/%2B/g')
+            DIFF="查看 [${PREV_TAG} → ${TAG}](https://github.com/${REPO}/compare/${PREV_URL}...${TAG_URL}) 的完整差异"
+          else
+            DIFF="首次发布，暂无上一版本可对比"
+          fi
+
+          {
+            echo "## 选择下载"
+            echo
+            echo "按你的 meme-generator-rs 编译时所用的 Rust 版本（stable 或 1.93.1）选择对应一列下载。"
+            echo
+            echo "### 命令行程序（CLI）"
+            echo
+            printf '%b' "${CLI_TABLE}"
+            echo
+            echo "### Python 轮子（wheel）"
+            echo
+            printf '%b' "${PY_TABLE}"
+            echo
+            echo "## 本次更新"
+            echo
+            cat /tmp/commits.md
+            echo
+            echo "${DIFF}"
+            echo
+            echo "## 构建信息"
+            echo
+            echo "- 版本: \`${VERSION}\`"
+            echo "- 发布时间: ${SGT}（SGT，UTC+8）"
+            echo "- 版本号格式: \`{Cargo版本}+build.{构建号}\`，构建号基于 Git 提交次数自动生成"
+            echo "- 构建 Rust 版本: stable, 1.93.1"
+            echo "- stable rustc 版本: \`${STABLE_RUSTC}\`"
+          } > /tmp/release_body.md
+
+          echo "📝 Release body:"
+          cat /tmp/release_body.md
+
+      - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.generate_version.outputs.tag }}
           name: Release ${{ needs.generate_version.outputs.version }}
           draft: false
           prerelease: false
-          files: artifacts/**/*
+          generate_release_notes: false
+          body_path: /tmp/release_body.md
+          files: |
+            artifacts/meme-generator-cli-*/meme-generator-cli-*
+            artifacts/meme-generator-py-*/meme-generator-py-*.whl
